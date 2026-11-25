@@ -39,6 +39,7 @@ h1{font-size:1.5rem;margin:0 0 4px}
 .c-ar .lang,.c-ar .terms,.c-ar.sentence{color:var(--ar)}
 .c-en .lang,.c-en .terms,.c-en.sentence{color:var(--en)}
 .c-ar .terms{font-family:"Segoe UI",Tahoma,Arial,sans-serif}
+.terms.missing{color:var(--muted);font-size:1rem;font-style:italic}
 .examples-title{font-size:1.1rem;font-weight:700;margin:28px 0 0}
 .sentence{font-size:1.2rem;line-height:1.8;margin:8px 0 0;overflow-wrap:anywhere}
 .sentence-en{font-size:1rem;margin:8px 0 0;direction:ltr;text-align:left}
@@ -54,7 +55,7 @@ mark{background:transparent;font-weight:700;text-decoration:underline;text-decor
 <body>
 <main class="wrap">
   <h1>מתרגם: עברית · ערבית · אנגלית</h1>
-  <p class="sub">הקלידו מילה בעברית, בערבית או באנגלית. השפה מזוהה אוטומטית, והתרגום מוצג לשתי השפות האחרות. תרגום מוצג רק כששלוש השפות מסכימות על אותה משמעות.</p>
+  <p class="sub">הקלידו מילה בעברית, בערבית או באנגלית. השפה מזוהה אוטומטית, והתרגום מוצג לשתי השפות האחרות. כשאין מילה מקבילה בשפה מסוימת, השורה מסומנת כחסרה.</p>
   <form id="f" class="search" autocomplete="off">
     <input id="q" type="text" placeholder="למשל: ספר, book או كتاب" aria-label="מילה בעברית, בערבית או באנגלית">
     <button id="go" type="submit">תרגם</button>
@@ -230,7 +231,8 @@ function findSenses(lang, word, blocks){
   const target = normFor(lang, word);
   const map = new Map();
   for (const b of blocks) {
-    if (!b.gloss || !b.he.length || !b.ar.length) continue;
+    // משמעות מתקבלת כשיש לה מילה במילון לפחות באחת משתי השפות, השנייה יכולה להיות חסרה
+    if (!b.gloss || (!b.he.length && !b.ar.length)) continue;
     if (lang === 'he' && !b.he.some(t => normHe(t) === target)) continue;
     if (lang === 'ar' && !b.ar.some(t => normAr(t) === target)) continue;
     // האנגלית היא מילת הערך שבעמודו נמצא התרגום (לא הגדרה), כשהמקור עברית או ערבית
@@ -474,11 +476,12 @@ async function translate(word){
   // משפט לדוגמה תמיד בעברית: משפט השימוש של המילה העברית (אם המקור עברית, של המילה שהוקלדה)
   let exWord = usedTitle, exText = text;
   if (lang !== 'he') {
-    const first = senses[0].he[0];
-    exWord = heTitle(first);
+    const first = senses.map(s => s.he[0]).find(Boolean);
+    exWord = first ? heTitle(first) : '';
     exText = hePages.get(exWord) || null;
   }
-  const ex = (exText && usageExamples('he', exText, exWord)) || await findWikiExample('he', exWord);
+  const ex = !exWord ? null
+    : (exText && usageExamples('he', exText, exWord)) || await findWikiExample('he', exWord);
   return { lang, senses, ex };
 }
 
@@ -495,7 +498,8 @@ if (typeof document !== 'undefined') {
   const row = (lang, text) => {
     const r = el('div', 'row c-' + lang);
     r.append(el('span', 'lang', LANG[lang].label));
-    const t = el('span', 'terms', text);
+    const t = el('span', 'terms', text || 'אין מילה מקבילה במילון');
+    if (!text) t.classList.add('missing');
     t.dir = LANG[lang].dir;
     r.append(t);
     return r;
@@ -527,12 +531,13 @@ if (typeof document !== 'undefined') {
       return;
     }
     if (!res.senses.length) {
-      out.append(el('p', 'status', 'לא נמצאה משמעות משותפת לשלוש השפות במילונים. לא מוצג תרגום שאינו מאומת.'));
+      out.append(el('p', 'status', 'לא נמצא תרגום למילה זו במילונים.'));
       return;
     }
     for (const s of res.senses) {
       const card = el('section', 'card');
-      card.append(el('div', 'badge', '✔ משמעות משותפת לשלוש השפות'));
+      const full = ['he', 'ar', 'en'].every(l => s[l].length);
+      card.append(el('div', 'badge', full ? '✔ משמעות משותפת לשלוש השפות' : 'משמעות שנמצאה, חלק מהתרגומים חסרים'));
       for (const lang of ['he', 'ar', 'en']) card.append(row(lang, s[lang].join(' · ')));
       out.append(card);
     }
