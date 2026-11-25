@@ -429,21 +429,47 @@ async function findWikiExample(lang, term){
   return null;
 }
 
-// הפונקציה הראשית: מחזירה {error} או {lang, senses, ex}
-async function translate(word){
-  const lang = detectLang(word);
-  if (!lang) return { error: 'unsupported' };
-  const title = cleanTitle(lang, word);
-  if (!title) return { error: 'empty' };
+// צורות חלופיות לחיפוש לפי כללי הדקדוק של כל שפה. נבדקות רק אם הערך המקורי לא קיים במילון
+function variants(lang, t){
+  const out = [];
+  if (lang === 'he') {
+    const p = t.replace(/^[והבלכמש]{1,2}(?=[\u05D0-\u05EA]{2,})/, '');
+    out.push(p, t.replace(/(ים|ות)$/, ''), p.replace(/(ים|ות)$/, ''));
+  } else if (lang === 'ar') {
+    const p = t.replace(/^(?:وال|بال|لل|ال|[وفبلك](?=[\u0621-\u064A]{3}))/, '');
+    out.push(p, t.replace(/(ات|ون|ين)$/, ''), p.replace(/(ات|ون|ين)$/, ''));
+  } else {
+    const l = t.toLowerCase();
+    out.push(l.replace(/ies$/, 'y'), l.replace(/es$/, ''), l.replace(/s$/, ''), l.replace(/ed$/, ''), l.replace(/ing$/, ''), l.replace(/ing$/, 'e'));
+  }
+  return unique(out.map(x => x.trim()).filter(x => x && x !== t && x.length >= 2));
+}
 
+// צורות נטויות (רבים, שם פועל וכו') מפנות לצורת היסוד בתבנית מסוג "... of|...|צורת היסוד" בסעיף השפה
+function lemmasOf(lang, wikitext){
+  const script = lang === 'he' ? HE_LETTERS : lang === 'ar' ? AR_LETTERS : /[a-z]/i;
+  const out = [];
+  const re = /\{\{\s*[^{}|]*?\bof\s*\|([^{}]*)\}\}/g;
+  for (const m of sectionLines(wikitext, LANG[lang].name).join('\n').matchAll(re)) {
+    const args = m[1].split('|').filter(a => !/=/.test(a)).map(a => cleanWiki(a).trim());
+    const lemma = args.find(a => a && script.test(a) && !/^(to|he|ar|en)$/.test(a));
+    // כותרות בוויקימילון הן בלי ניקוד, לכן צורת היסוד מנורמלת לכותרת
+    if (lemma) out.push(cleanTitle(lang, lemma));
+  }
+  return unique(out);
+}
+
+// בדיקה של מילה אחת (וצורותיה) במילון: מחזירה {found, lemmas} ואם יש תרגומים גם {lang, senses, ex}
+async function lookup(lang, title){
   // באנגלית מנסים גם אות קטנה, כי ערכי ויקימילון באנגלית הם באותיות קטנות
   const names = lang === 'en' ? unique([title, title.toLowerCase()]) : [title];
   const pages = await fetchPages('en.wiktionary', names);
   const usedTitle = names.find(n => pages.get(n));
   const text = usedTitle ? pages.get(usedTitle) : null;
-  if (!text) return { error: 'no-entry' };
+  if (!text) return { found: false, lemmas: [] };
 
   const entries = entriesOf(text, LANG[lang].name);
+  const lemmas = lemmasOf(lang, text);
   let blocks = [];
   if (lang === 'en') {
     // באנגלית, תרגומי הערך נמצאים בעמוד עצמו ובתת-הדף /translations
@@ -451,15 +477,28 @@ async function translate(word){
     blocks = [...parseTranslationBlocks(text, usedTitle), ...parseTranslationBlocks(tp.get(usedTitle + '/translations') || '', usedTitle)];
   } else {
     const glosses = entries.flatMap(e => e.glosses);
-    if (!glosses.length) return { error: 'no-entry' };
     // שאילתה אחת לכל הערכים באנגלית: הערך עצמו ותת-דף התרגומים שלו
     const heads = unique(glosses.flatMap(englishHeads)).slice(0, 8);
-    const hp = await fetchPages('en.wiktionary', heads.flatMap(h => [h, h + '/translations']));
-    for (const [k, t] of hp) if (t) blocks.push(...parseTranslationBlocks(t, k.replace(/\/translations$/, '')));
+    if (heads.length) {
+      const hp = await fetchPages('en.wiktionary', heads.flatMap(h => [h, h + '/translations']));
+      for (const [k, t] of hp) if (t) blocks.push(...parseTranslationBlocks(t, k.replace(/\/translations$/, '')));
+    }
   }
 
-  const senses = findSenses(lang, usedTitle, blocks);
-  if (!senses.length) return { lang, senses: [] };
+  let senses = findSenses(lang, usedTitle, blocks);
+  if (!senses.length && lang !== 'en') {
+    // אין טבלת תרגום לערך: מציגים את מילות ההגדרה הקצרות באנגלית, והשפה השנייה נשארת חסרה
+    const heads = unique(entries.flatMap(e => e.glosses).flatMap(englishHeads)).slice(0, 4);
+    if (heads.length) {
+      senses = [{
+        gloss: heads[0],
+        he: lang === 'he' ? vocalizedForms(usedTitle, heads[0], entries) : [],
+        ar: lang === 'ar' ? [usedTitle] : [],
+        en: heads,
+      }];
+    }
+  }
+  if (!senses.length) return { found: true, lemmas };
 
   // ניקוד לעברית: עברית שמגיעה מתרגום בלי ניקוד מקבלת את הצורות מעמוד המילה העברית שלה
   let heEntries = lang === 'he' ? entries : [];
@@ -482,7 +521,37 @@ async function translate(word){
   }
   const ex = !exWord ? null
     : (exText && usageExamples('he', exText, exWord)) || await findWikiExample('he', exWord);
-  return { lang, senses, ex };
+  return { found: true, lemmas, lang, senses, ex };
+}
+
+// הפונקציה הראשית: מחזירה {error} או {lang, senses, ex, via}.
+// מנסה את המילה כפי שהוקלדה, ואחר כך צורות חלופיות וצורת היסוד (עד 6 בדיקות)
+async function translate(word){
+  const lang = detectLang(word);
+  if (!lang) return { error: 'unsupported' };
+  const title = cleanTitle(lang, word);
+  if (!title) return { error: 'empty' };
+
+  // בקשה אחת לכל הכותרות האפשריות (המילה וצורותיה החלופיות), כדי לחסוך בקשות לוויקימילון
+  const cands = unique([title, ...variants(lang, title)]);
+  const exists = await fetchPages('en.wiktionary', cands);
+  const queue = cands.filter(c => exists.get(c));
+  if (!queue.length) return { error: 'no-entry' };
+
+  const seen = new Set();
+  for (let i = 0; i < queue.length && seen.size < 6; i++) {
+    const t = queue[i];
+    if (seen.has(t)) continue;
+    seen.add(t);
+    if (i > 0) await sleep(800);
+    const r = await lookup(lang, t);
+    if (r.senses && r.senses.length) {
+      return { lang: r.lang, senses: r.senses, ex: r.ex, via: t !== title ? t : '' };
+    }
+    // צורת היסוד שהערך מפנה אליה מצטרפת לתור החיפוש
+    for (const x of r.lemmas || []) if (!seen.has(x) && !queue.includes(x)) queue.push(x);
+  }
+  return { lang, senses: [] };
 }
 
 /* ============ ממשק (DOM) ============ */
@@ -534,6 +603,7 @@ if (typeof document !== 'undefined') {
       out.append(el('p', 'status', 'לא נמצא תרגום למילה זו במילונים.'));
       return;
     }
+    if (res.via) out.append(el('p', 'note', 'המילה נמצאה במילון לפי הצורה: ' + res.via));
     for (const s of res.senses) {
       const card = el('section', 'card');
       const full = ['he', 'ar', 'en'].every(l => s[l].length);
