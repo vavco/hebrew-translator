@@ -181,13 +181,14 @@ function englishHeads(gloss){
 const TOP_RE = /\{\{\s*trans-top(?:-see|-also)?\s*(?:\|([^}]*))?\}\}/;
 const BOTTOM_RE = /\{\{\s*trans-bottom\s*\}\}/;
 const TERM_RE = /\{\{\s*tt?\+?\s*\|\s*(he|ar)\s*\|([^|}]*)/g;
-function parseTranslationBlocks(wikitext){
+function parseTranslationBlocks(wikitext, head = ''){
   const blocks = [];
   let cur = null;
   for (const line of String(wikitext).split('\n')) {
     const top = line.match(TOP_RE);
     if (top) {
-      cur = { gloss: cleanWiki((top[1] || '').split('|')[0]), he: [], ar: [] };
+      // head: כותרת העמוד באנגלית שבו נמצא הבלוק, והיא התרגום באנגלית של המשמעות
+      cur = { gloss: cleanWiki((top[1] || '').split('|')[0]), head, he: [], ar: [] };
       blocks.push(cur);
       continue;
     }
@@ -232,15 +233,17 @@ function findSenses(lang, word, blocks){
     if (!b.gloss || !b.he.length || !b.ar.length) continue;
     if (lang === 'he' && !b.he.some(t => normHe(t) === target)) continue;
     if (lang === 'ar' && !b.ar.some(t => normAr(t) === target)) continue;
-    const key = b.gloss + '|' + unique(b.ar).join(',');
-    if (!map.has(key)) map.set(key, { gloss: b.gloss, he: [], ar: unique(b.ar), en: [b.gloss] });
+    // האנגלית היא מילת הערך שבעמודו נמצא התרגום (לא הגדרה), כשהמקור עברית או ערבית
+    const en = lang === 'en' ? word : (b.head || b.gloss);
+    const key = en + '|' + unique(b.ar).join(',');
+    if (!map.has(key)) map.set(key, { gloss: b.gloss, he: [], ar: unique(b.ar), en: [en] });
     map.get(key).he.push(...b.he);
   }
   return [...map.values()].map(s => ({
     gloss: s.gloss,
     he: unique(s.he),
     ar: s.ar,
-    en: lang === 'en' ? [word] : s.en,
+    en: s.en,
   }));
 }
 
@@ -443,14 +446,14 @@ async function translate(word){
   if (lang === 'en') {
     // באנגלית, תרגומי הערך נמצאים בעמוד עצמו ובתת-הדף /translations
     const tp = await fetchPages('en.wiktionary', [usedTitle + '/translations']);
-    blocks = [...parseTranslationBlocks(text), ...parseTranslationBlocks(tp.get(usedTitle + '/translations') || '')];
+    blocks = [...parseTranslationBlocks(text, usedTitle), ...parseTranslationBlocks(tp.get(usedTitle + '/translations') || '', usedTitle)];
   } else {
     const glosses = entries.flatMap(e => e.glosses);
     if (!glosses.length) return { error: 'no-entry' };
     // שאילתה אחת לכל הערכים באנגלית: הערך עצמו ותת-דף התרגומים שלו
     const heads = unique(glosses.flatMap(englishHeads)).slice(0, 8);
     const hp = await fetchPages('en.wiktionary', heads.flatMap(h => [h, h + '/translations']));
-    for (const t of hp.values()) if (t) blocks.push(...parseTranslationBlocks(t));
+    for (const [k, t] of hp) if (t) blocks.push(...parseTranslationBlocks(t, k.replace(/\/translations$/, '')));
   }
 
   const senses = findSenses(lang, usedTitle, blocks);
@@ -458,16 +461,24 @@ async function translate(word){
 
   // ניקוד לעברית: עברית שמגיעה מתרגום בלי ניקוד מקבלת את הצורות מעמוד המילה העברית שלה
   let heEntries = lang === 'he' ? entries : [];
+  const hePages = new Map();
   if (lang !== 'he') {
-    const heTitles = unique(senses.flatMap(s => s.he).filter(t => !HAS_NIKUD.test(t)).map(heTitle)).filter(Boolean);
+    const heTitles = unique(senses.flatMap(s => s.he).map(heTitle)).filter(Boolean);
     const hep = await fetchPages('en.wiktionary', heTitles);
-    for (const t of hep.values()) if (t) heEntries.push(...hebrewEntries(t));
+    for (const [k, t] of hep) if (t) { hePages.set(k, t); heEntries.push(...hebrewEntries(t)); }
   }
   for (const s of senses) {
     s.he = unique(s.he.flatMap(t => vocalizedForms(t, s.gloss, heEntries)));
   }
 
-  const ex = usageExamples(lang, text, usedTitle) || await findWikiExample(lang, usedTitle);
+  // משפט לדוגמה תמיד בעברית: משפט השימוש של המילה העברית (אם המקור עברית, של המילה שהוקלדה)
+  let exWord = usedTitle, exText = text;
+  if (lang !== 'he') {
+    const first = senses[0].he[0];
+    exWord = heTitle(first);
+    exText = hePages.get(exWord) || null;
+  }
+  const ex = (exText && usageExamples('he', exText, exWord)) || await findWikiExample('he', exWord);
   return { lang, senses, ex };
 }
 
@@ -490,21 +501,17 @@ if (typeof document !== 'undefined') {
     return r;
   };
 
-  function sentenceBox(lang, ex){
+  // משפט לדוגמה תמיד בעברית, בלי תרגום
+  function sentenceBox(ex){
     const box = el('section', 'card');
     if (!ex) {
-      box.append(el('p', 'status', 'לא נמצא משפט לדוגמה לשימוש במילה, לא במילון ולא בוויקיפדיה.'));
+      box.append(el('p', 'status', 'לא נמצא משפט לדוגמה בעברית, לא במילון ולא בוויקיפדיה.'));
       return box;
     }
-    const p = el('p', 'sentence c-' + lang);
-    p.dir = LANG[lang].dir;
+    const p = el('p', 'sentence c-he');
+    p.dir = 'rtl';
     for (const seg of ex.segs) p.append(seg.mark ? el('mark', null, seg.text) : seg.text);
     box.append(p);
-    if (ex.en) {
-      const t = el('p', 'sentence-en c-en', ex.en);
-      t.dir = 'ltr';
-      box.append(t);
-    }
     return box;
   }
 
@@ -529,8 +536,8 @@ if (typeof document !== 'undefined') {
       for (const lang of ['he', 'ar', 'en']) card.append(row(lang, s[lang].join(' · ')));
       out.append(card);
     }
-    out.append(el('h2', 'examples-title', 'משפט לדוגמה ב' + LANG[res.lang].label));
-    out.append(sentenceBox(res.lang, res.ex));
+    out.append(el('h2', 'examples-title', 'משפט לדוגמה בעברית'));
+    out.append(sentenceBox(res.ex));
   }
 
   let reqId = 0;
