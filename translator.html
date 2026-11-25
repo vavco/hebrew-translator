@@ -61,7 +61,7 @@ mark{background:transparent;font-weight:700;text-decoration:underline;text-decor
     <button id="go" type="submit">תרגם</button>
   </form>
   <div id="out" aria-live="polite"></div>
-  <p class="note">מקורות: Wiktionary (תרגומים, ניקוד ודוגמאות שימוש) ו-Wikipedia (גיבוי למשפט לדוגמה). נדרש חיבור לאינטרנט.</p>
+  <p class="note">מקורות: Wiktionary (תרגומים וניקוד). נדרש חיבור לאינטרנט.</p>
 </main>
 <script>
 /* ============ מנוע (פונקציות טהורות, ללא DOM) ============ */
@@ -512,16 +512,7 @@ async function lookup(lang, title){
     s.he = unique(s.he.flatMap(t => vocalizedForms(t, s.gloss, heEntries)));
   }
 
-  // משפט לדוגמה תמיד בעברית: משפט השימוש של המילה העברית (אם המקור עברית, של המילה שהוקלדה)
-  let exWord = usedTitle, exText = text;
-  if (lang !== 'he') {
-    const first = senses.map(s => s.he[0]).find(Boolean);
-    exWord = first ? heTitle(first) : '';
-    exText = hePages.get(exWord) || null;
-  }
-  const ex = !exWord ? null
-    : (exText && usageExamples('he', exText, exWord)) || await findWikiExample('he', exWord);
-  return { found: true, lemmas, lang, senses, ex };
+  return { found: true, lemmas, lang, senses };
 }
 
 // הפונקציה הראשית: מחזירה {error} או {lang, senses, ex, via}.
@@ -574,20 +565,6 @@ if (typeof document !== 'undefined') {
     return r;
   };
 
-  // משפט לדוגמה תמיד בעברית, בלי תרגום
-  function sentenceBox(ex){
-    const box = el('section', 'card');
-    if (!ex) {
-      box.append(el('p', 'status', 'לא נמצא משפט לדוגמה בעברית, לא במילון ולא בוויקיפדיה.'));
-      return box;
-    }
-    const p = el('p', 'sentence c-he');
-    p.dir = 'rtl';
-    for (const seg of ex.segs) p.append(seg.mark ? el('mark', null, seg.text) : seg.text);
-    box.append(p);
-    return box;
-  }
-
   function render(res){
     const out = $('out');
     out.replaceChildren();
@@ -611,8 +588,6 @@ if (typeof document !== 'undefined') {
       for (const lang of ['he', 'ar', 'en']) card.append(row(lang, s[lang].join(' · ')));
       out.append(card);
     }
-    out.append(el('h2', 'examples-title', 'משפט לדוגמה בעברית'));
-    out.append(sentenceBox(res.ex));
   }
 
   let reqId = 0;
