@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>מתרגם עברית ← ערבית ואנגלית</title>
+<style>
+:root{
+  --bg:#f5f6fa;--card:#ffffff;--text:#1c2230;--muted:#667085;--border:#e2e6ef;
+  --he:#1d5fd1;--ar:#13804a;--en:#b85a0a;--ok:#0f766e;--accent:#4f46e5;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1420;--card:#171e2d;--text:#e7eaf2;--muted:#9aa4b8;--border:#2a3448;
+    --he:#72aaff;--ar:#5fd39a;--en:#ffab5c;--ok:#5eead4;--accent:#8f8bff;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f1420;--card:#171e2d;--text:#e7eaf2;--muted:#9aa4b8;--border:#2a3448;
+  --he:#72aaff;--ar:#5fd39a;--en:#ffab5c;--ok:#5eead4;--accent:#8f8bff;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI",Arial,"Noto Sans Hebrew",sans-serif;line-height:1.5}
+.wrap{max-width:680px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px;font-size:.95rem}
+.search{display:flex;gap:8px}
+.search input{flex:1;min-width:0;font:inherit;font-size:1.1rem;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text)}
+.search button{font:inherit;padding:10px 18px;border:0;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer}
+.search button:disabled{opacity:.6;cursor:default}
+.status{color:var(--muted);margin:16px 0}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-top:16px}
+.badge{display:inline-block;font-size:.85rem;color:var(--ok);font-weight:600;margin-bottom:6px}
+.row{display:flex;gap:12px;align-items:baseline;padding:8px 0;border-top:1px solid var(--border)}
+.row:first-of-type{border-top:0}
+.lang{flex:0 0 56px;font-weight:700;font-size:.9rem}
+.terms{flex:1;min-width:0;font-size:1.2rem;overflow-wrap:anywhere}
+.c-he .lang,.c-he .terms,.c-he.sentence,.c-he mark{color:var(--he)}
+.c-ar .lang,.c-ar .terms,.c-ar.sentence,.c-ar mark{color:var(--ar)}
+.c-en .lang,.c-en .terms{color:var(--en)}
+.examples-title{font-weight:700;margin:24px 0 0}
+.ex .lang{display:block;margin-bottom:4px;font-size:.9rem}
+.sentence{font-size:1.15rem;margin:0;overflow-wrap:anywhere}
+mark{background:transparent;font-weight:700;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+.note{color:var(--muted);font-size:.85rem;margin-top:18px}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>מתרגם: עברית ← ערבית ואנגלית</h1>
+  <p class="sub">תרגום מוצג רק אם שלוש השפות מסכימות על אותה משמעות. האנגלית היא העוגן לאימות.</p>
+  <form id="f" class="search" autocomplete="off">
+    <input id="q" dir="rtl" type="text" placeholder="הקלד מילה בעברית, למשל: ספר" aria-label="מילה בעברית">
+    <button id="go" type="submit">תרגם</button>
+  </form>
+  <div id="out" aria-live="polite"></div>
+  <p class="note">המקורות: Wiktionary (תרגומים לפי משמעות) ו-Wikipedia (משפטים לדוגמה). נדרש חיבור לאינטרנט.</p>
+</main>
+<script>
+/* ============ מנוע (פונקציות טהורות, ללא DOM) ============ */
+
+const HE_MARKS = /[֑-ׇ]/g;            // ניקוד וטעמים
+const AR_MARKS = /[ً-ٰٟـ]/g; // תנועות וטטוויל
+const FINAL_MAP = {'ך':'כ','ם':'מ','ן':'נ','ף':'פ','ץ':'צ'};
+const unique = a => [...new Set(a)];
+
+// כותרת לחיפוש בוויקימילון: בלי ניקוד, שומרים על אותיות סופיות
+function heTitle(s){
+  return String(s).replace(/־/g,' ').replace(HE_MARKS,'').replace(/\s+/g,' ').trim();
+}
+// השוואה בין מילים בעברית: בלי ניקוד, בלי סימני פיסוק, אותיות סופיות מנורמלות
+function normHe(s){
+  return heTitle(s).replace(/[׳״"'.,!?()\[\]]/g,'').replace(/[ךםןףץ]/g, c => FINAL_MAP[c]).trim();
+}
+function normAr(s){
+  return String(s).replace(AR_MARKS,'').replace(/[إأآٱ]/g,'ا').replace(/\s+/g,' ').trim();
+}
+
+// ניקוי קוד ויקי: תבניות, קישורים, תגיות HTML
+function cleanWiki(s){
+  let t = String(s);
+  for (let i = 0; i < 3; i++) t = t.replace(/\{\{[^{}]*\}\}/g, '');
+  return t.replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, '$1')
+          .replace(/<[^>]+>/g, '').replace(/''+/g, '')
+          .replace(/\s+/g, ' ').trim();
+}
+
+// משמעויות עבריות (סעיף ==Hebrew== בלבד) -> טקסט הגדרה באנגלית
+function glossFromLine(line){
+  const body = line.replace(/^#\s*/, '');
+  if (/spelling of|alternative (?:form|spelling)|misspelling|inflection of/i.test(body)) return null;
+  const expanded = body.replace(/\{\{(?:tcl|gloss|gl)\|[^|}]*\|([^|}]*)[^}]*\}\}/g, '$1')
+                       .replace(/\{\{lb\|[^}]*\}\}/g, '');
+  return cleanWiki(expanded) || null;
+}
+function hebrewGlosses(wikitext){
+  const out = [];
+  let inHe = false;
+  for (const line of String(wikitext).split('\n')){
+    if (/^==[^=]/.test(line)) { inHe = /^==\s*Hebrew\s*==\s*$/.test(line); continue; }
+    if (inHe && /^# /.test(line)) {
+      const g = glossFromLine(line);
+      if (g) out.push(g);
+    }
+  }
+  return out;
+}
+
+// מהגדרה באנגלית לשם ערך באנגלית לחיפוש ("to count" -> "count")
+function englishHeads(gloss){
+  const h = gloss.split(/[,;:(]/)[0].trim().toLowerCase()
+                 .replace(/^to\s+/, '').replace(/^(?:a|an|the)\s+/, '').trim();
+  const out = [h];
+  const first = h.split(' ')[0];
+  if (first && first !== h) out.push(first);
+  return unique(out).filter(x => /^[a-z][a-z' -]{0,40}$/.test(x)).slice(0, 2);
+}
+
+// בלוקי תרגום: כל trans-top הוא משמעות אחת באנגלית, ובתוכו תרגומים לשפות
+const TOP_RE = /\{\{\s*trans-top(?:-see|-also)?\s*(?:\|([^}]*))?\}\}/;
+const BOTTOM_RE = /\{\{\s*trans-bottom\s*\}\}/;
+const TERM_RE = /\{\{\s*tt?\+?\s*\|\s*(he|ar)\s*\|([^|}]*)/g;
+function parseTranslationBlocks(wikitext){
+  const blocks = [];
+  let cur = null;
+  for (const line of String(wikitext).split('\n')){
+    const top = line.match(TOP_RE);
+    if (top) {
+      cur = { gloss: cleanWiki((top[1] || '').split('|')[0]), he: [], ar: [] };
+      blocks.push(cur);
+      continue;
+    }
+    if (BOTTOM_RE.test(line)) { cur = null; continue; }
+    if (cur) {
+      for (const m of line.matchAll(TERM_RE)) {
+        const term = cleanWiki(m[2]).replace(/\(.*?\)/g, '').trim();
+        if (term) cur[m[1]].push(term);
+      }
+    }
+  }
+  return blocks;
+}
+
+// משמעות משותפת: בלוק שמכיל את המילה בעברית, תרגום לערבית, והגדרה באנגלית
+function findSenses(hebInput, blocks){
+  const target = normHe(hebInput);
+  const found = blocks.filter(b => b.gloss && b.ar.length && b.he.some(t => normHe(t) === target));
+  const seen = new Set();
+  const out = [];
+  for (const b of found) {
+    const key = b.gloss + '|' + b.ar.join(',');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ gloss: b.gloss, he: unique(b.he), ar: unique(b.ar) });
+  }
+  return out;
+}
+
+// משפט שמכיל את ההתאמה, מתוך קטע חיפוש של ויקיפדיה (מסומן ב-searchmatch)
+function extractSentence(snippetHtml){
+  const O = '\u0001', C = '\u0002';
+  const s = String(snippetHtml)
+    .replace(/<span class="searchmatch">/g, O).replace(/<\/span>/g, C)
+    .replace(/<[^>]+>/g, '')
+    .replace(/&quot;/g, '"').replace(/&#039;|&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const a = s.indexOf(O), b = s.indexOf(C, a + 1);
+  if (a < 0 || b < 0 || b === a + 1) return null;
+  const END = /[.!?؟۔\n]/;
+  let start = 0;
+  for (let i = a - 1; i >= 0; i--) if (END.test(s[i])) { start = i + 1; break; }
+  let end = s.length;
+  for (let i = b + 1; i < s.length; i++) if (END.test(s[i])) { end = i + 1; break; }
+  const sentence = s.slice(start, end).trim();
+  if (sentence.length > 280) return null;
+
+  const segs = [];
+  let buf = '', inMark = false;
+  for (const ch of sentence) {
+    if (ch === O || ch === C) {
+      if (buf) segs.push({ text: buf, mark: inMark });
+      buf = '';
+      inMark = ch === O;
+    } else buf += ch;
+  }
+  if (buf) segs.push({ text: buf, mark: inMark });
+  return { segs };
+}
+
+/* ============ גישה לרשת ============ */
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// קריאה ל-API עם ניסיון חוזר אחד. זורק שגיאה אם אין תשובה תקינה
+async function apiGet(url){
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await sleep(2500);
+    try {
+      const r = await fetch(url);
+      const j = r.ok ? await r.json().catch(() => null) : null;
+      if (j) return j;
+      lastErr = new Error('bad-response');
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+// שליפת דפי ויקי בבקשה אחת לכל עד 50 כותרות. מחזיר Map: כותרת -> טקסט ויקי או null
+async function fetchPages(site, titles){
+  const out = new Map();
+  const list = unique(titles).filter(Boolean);
+  for (let i = 0; i < list.length; i += 50) {
+    const chunk = list.slice(i, i + 50);
+    const url = `https://${site}.org/w/api.php?action=query&prop=revisions&rvprop=content&rvslots=main` +
+                `&format=json&formatversion=2&redirects=1&origin=*&titles=${encodeURIComponent(chunk.join('|'))}`;
+    const q = (await apiGet(url)).query || {};
+    const byTitle = new Map();
+    for (const p of q.pages || []) {
+      const rev = p.revisions && p.revisions[0];
+      byTitle.set(p.title, !p.missing && rev ? rev.slots.main.content : null);
+    }
+    const alias = new Map();
+    for (const n of [...(q.normalized || []), ...(q.redirects || [])]) alias.set(n.from, n.to);
+    for (const t of chunk) {
+      let final = t;
+      for (let k = 0; k < 3 && alias.has(final); k++) final = alias.get(final);
+      out.set(t, byTitle.get(final) ?? null);
+    }
+  }
+  return out;
+}
+
+async function findExample(lang, term){
+  if (!term) return null;
+  const url = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srlimit=8&srprop=snippet&format=json&origin=*&srsearch=${encodeURIComponent(term)}`;
+  try {
+    const j = await apiGet(url);
+    for (const hit of (j.query && j.query.search) || []) {
+      const ex = extractSentence(hit.snippet);
+      if (ex) return ex;
+    }
+  } catch (e) { /* ללא דוגמה */ }
+  return null;
+}
+
+// הפונקציה הראשית: מחזירה {error} או {senses, heEx, arEx}
+async function translate(word){
+  const title = heTitle(word);
+  if (!title) return { error: 'empty' };
+  const heEntry = (await fetchPages('en.wiktionary', [title])).get(title);
+  if (!heEntry) return { error: 'no-entry' };
+  const glosses = hebrewGlosses(heEntry);
+  if (!glosses.length) return { error: 'no-entry' };
+
+  // שאילתה אחת לכל הערכים באנגלית: הערך עצמו ותת-דף התרגומים שלו
+  const heads = unique(glosses.flatMap(englishHeads)).slice(0, 8);
+  const pageTexts = await fetchPages('en.wiktionary', heads.flatMap(h => [h, h + '/translations']));
+  const blocks = [];
+  for (const text of pageTexts.values()) {
+    if (text) blocks.push(...parseTranslationBlocks(text));
+  }
+  const senses = findSenses(word, blocks);
+  if (!senses.length) return { senses: [] };
+
+  const arTerm = senses[0].ar[0];
+  const [heEx, arEx] = await Promise.all([
+    findExample('he', title),
+    findExample('ar', normAr(arTerm)),
+  ]);
+  return { senses, heEx, arEx };
+}
+
+/* ============ ממשק ============ */
+
+if (typeof document !== 'undefined') {
+  const $ = id => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  };
+  const row = (cls, label, text, dir) => {
+    const r = el('div', 'row ' + cls);
+    r.append(el('span', 'lang', label));
+    const t = el('span', 'terms', text);
+    t.dir = dir;
+    r.append(t);
+    return r;
+  };
+  const sentenceBox = (cls, label, ex) => {
+    const box = el('div', 'card ex');
+    box.append(el('span', 'lang ' + cls, label));
+    if (!ex) {
+      box.append(el('p', 'sentence', 'לא נמצא משפט לדוגמה.'));
+      return box;
+    }
+    const p = el('p', 'sentence ' + cls);
+    p.dir = 'rtl';
+    for (const seg of ex.segs) {
+      p.append(seg.mark ? el('mark', null, seg.text) : seg.text);
+    }
+    box.append(p);
+    return box;
+  };
+
+  function render(res){
+    const out = $('out');
+    out.replaceChildren();
+    if (res.error === 'no-entry' || res.error === 'empty') {
+      out.append(el('p', 'status', 'לא נמצא ערך לעברית זו במילון. נסו צורת יסוד של המילה, בלי מילות יחס או סיומות.'));
+      return;
+    }
+    if (!res.senses.length) {
+      out.append(el('p', 'status', 'לא נמצאה משמעות משותפת לשלוש השפות במילונים. לא מוצג תרגום שאינו מאומת.'));
+      return;
+    }
+    for (const s of res.senses) {
+      const card = el('section', 'card');
+      card.append(el('div', 'badge', '✔ משמעות משותפת לשלוש השפות'));
+      card.append(row('c-he', 'עברית', s.he.join(' · '), 'rtl'));
+      card.append(row('c-ar', 'ערבית', s.ar.join(' · '), 'rtl'));
+      card.append(row('c-en', 'אנגלית', s.gloss, 'ltr'));
+      out.append(card);
+    }
+    out.append(el('h2', 'examples-title', 'משפטים לדוגמה'));
+    out.append(sentenceBox('c-he', 'עברית', res.heEx));
+    out.append(sentenceBox('c-ar', 'ערבית', res.arEx));
+  }
+
+  let reqId = 0;
+  $('f').addEventListener('submit', async e => {
+    e.preventDefault();
+    const word = $('q').value.trim();
+    if (!word) return;
+    const id = ++reqId;
+    const btn = $('go');
+    btn.disabled = true;
+    $('out').replaceChildren(el('p', 'status', 'מחפש במילונים…'));
+    let res;
+    try { res = await translate(word); }
+    catch (err) { res = { error: 'network', detail: String(err && err.message || err) }; }
+    if (id !== reqId) return;
+    btn.disabled = false;
+    if (res.error === 'network') {
+      $('out').replaceChildren(
+        el('p', 'status', 'לא התקבלה תשובה מהמילונים. ייתכן עומס זמני על השירות או חסימה ברשת. נסו שוב בעוד דקה או שתיים.'),
+        el('p', 'note', 'פרט טכני: ' + (res.detail || 'לא ידוע') + ' | דף: ' + location.protocol));
+      return;
+    }
+    render(res);
+  });
+}
+</script>
+</body>
+</html>
